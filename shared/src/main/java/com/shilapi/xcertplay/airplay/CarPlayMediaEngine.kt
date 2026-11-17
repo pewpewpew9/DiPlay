@@ -632,6 +632,8 @@ class CarPlayMediaEngine(
         val port = (stream["dataPort"] as? Number)?.toInt() ?: return null
         if (port !in 1..65535) return null
         val host = session.remoteAddress ?: return null
+        // Over the userspace bridge the control peer is loopback: own that port so the uplink is relayed.
+        if (host.isLoopbackAddress) com.shilapi.xcertplay.network.MicUplink.listen(port)
         val key = dataStreamKey(session, stream, DATASTREAM_INPUT_KEY) ?: return null
         val formatBits = (stream["audioFormat"] as? Number)?.toLong() ?: 0L
         val framesPerPacket = (stream["framesPerPacket"] as? Number)?.toInt() ?: 0

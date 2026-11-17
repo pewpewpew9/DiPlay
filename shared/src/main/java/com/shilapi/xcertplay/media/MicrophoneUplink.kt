@@ -88,11 +88,7 @@ internal class MicrophoneUplink(
             // The Geely/Lynk head unit only opens the microphone for the voice-communication
             // source; its voice-recognition source records silence, so Siri never hears.
             config.audioType == "speechrecognition" ->
-                if (com.shilapi.xcertplay.network.GeelyHeadUnit.detected) {
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION
-                } else {
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION
-                }
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
             else -> MediaRecorder.AudioSource.MIC
         }
         stats.useSource(source)
@@ -116,7 +112,7 @@ internal class MicrophoneUplink(
         val bufferSize = maxOf(minBuffer * 2, config.frameBytes * 4)
         // Some head units throw on VOICE_RECOGNITION at build(); VOICE_COMMUNICATION works there.
         val nextRecorder = createRecorder(source, channelMask, bufferSize)
-            ?: if (source == MediaRecorder.AudioSource.VOICE_RECOGNITION) {
+            ?: if (source != MediaRecorder.AudioSource.VOICE_COMMUNICATION) {
                 stats.useSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
                 createRecorder(MediaRecorder.AudioSource.VOICE_COMMUNICATION, channelMask, bufferSize)
             } else {
@@ -546,7 +542,7 @@ internal class MicrophoneUplink(
  * echo on it. Geely/Lynk head units record silence on VOICE_RECOGNITION, so they keep the old choice.
  */
 internal fun telephonyMicrophoneSource(speakerphoneCall: Boolean, carPhoneState: Boolean, geelyHeadUnit: Boolean): Int = when {
-    carPhoneState && !geelyHeadUnit -> MediaRecorder.AudioSource.VOICE_RECOGNITION
+    carPhoneState && !geelyHeadUnit -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
     speakerphoneCall -> MediaRecorder.AudioSource.MIC
     else -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
 }
