@@ -292,6 +292,36 @@ internal object CarPlayMediaKeys {
         publishPlaybackStateLocked()
     }
 
+
+    /**
+     * Li Auto's media centre reads its own extras instead of the standard session fields. Without
+     * them it marks the source UNCONTROLLABLE, drops wheel keys and hands volume back to the
+     * widget's default app. Values mirror what its own music apps publish.
+     */
+    private fun liAutoExtras(): android.os.Bundle {
+        fun button(type: Int, position: Int) = android.os.Bundle().apply {
+            putBoolean("buttonEnabled", true)
+            putInt("buttonType", type)
+            putBoolean("buttonKeepInMiniCard", false)
+            putInt("buttonPosition", position)
+        }
+        val buttons = arrayListOf(
+            button(3, 1001), // PREVIOUS
+            button(5, 1002), // PLAY_PAUSE
+            button(4, 1003), // NEXT
+        )
+        return android.os.Bundle().apply {
+            putBoolean("isControllable", true)
+            putInt("mediaControlState", 0)
+            putInt("mediaType", 1000)
+            putInt("mediaBarDisplayType", 1000)
+            putBoolean("receiveVolumeChangedByWheelAction", true)
+            putParcelableArrayList("buttonSettings", buttons)
+            putBoolean("android.media.playback.ALWAYS_RESERVE_SPACE_FOR.ACTION_SKIP_TO_NEXT", true)
+            putBoolean("android.media.playback.ALWAYS_RESERVE_SPACE_FOR.ACTION_SKIP_TO_PREVIOUS", true)
+        }
+    }
+
     private fun start(context: Context) {
         val expectedController = controller ?: return
         val focusDisabled = AirPlayPersistence.loadDisableMediaKeyAudioFocus(context)
@@ -324,6 +354,27 @@ internal object CarPlayMediaKeys {
         }
         session = MediaSession(context, "DiPlay CarPlay").apply {
             setCallback(callback, mainHandler)
+            runCatching { setExtras(liAutoExtras()) }
+                .onFailure { Log.w(TAG, "Li Auto media extras not set", it) }
+            // Li Auto's media centre marks a source "not controllable" without a launch intent:
+            // it needs to be able to open the app that owns the session.
+            runCatching {
+                val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                    ?: Intent(context, CarPlayHostActivity::class.java)
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (android.os.Build.VERSION.SDK_INT >= 23) android.app.PendingIntent.FLAG_IMMUTABLE else 0)
+                setSessionActivity(
+                    android.app.PendingIntent.getActivity(context, 0, launch, flags)
+                )
+            }.onFailure { Log.w(TAG, "session activity not set", it) }
+            // Volume keys on this head unit follow the session's playback type.
+            setPlaybackToLocal(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
             setMetadata(androidMetadata(nowPlaying, shownArtworkLocked()))
             isActive = true
         }

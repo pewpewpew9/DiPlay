@@ -63,7 +63,7 @@ class CarPlayVpnService : VpnService() {
     @Volatile private var attachment: AirPlayAttachment? = null
     private var serverSocket: ServerSocket? = null
     private var additionalServers: List<ServerSocket> = emptyList()
-    private var bridge: Ipv6NcmBridge? = null
+    private var bridge: java.io.Closeable? = null
     private var tun: ParcelFileDescriptor? = null
     private var attachGeneration = 0
 
@@ -98,29 +98,46 @@ class CarPlayVpnService : VpnService() {
             }
             require(hostMac.size == 6) { "hostMac must be 6 bytes" }
 
-            val tunFd = Builder()
-                .addAddress(linkLocal, LINK_PREFIX)
-                .addRoute(LINK_LOCAL_ROUTE, LINK_PREFIX)
-                .setSession(SESSION_NAME)
-                .setMtu(TUN_MTU)
-                .setBlocking(true)
-                // An empty app list routes every UID through this VPN. Scope it before establish;
-                // rejection must reach the existing attachment cleanup, never an unscoped retry.
-                .addAllowedApplication(packageName)
-                .establish()
-                ?: throw IOException("VpnService.establish returned null")
-            tun = tunFd
-
-            val ipv6Bridge = Ipv6NcmBridge(ncm, tunFd, hostMac) { error ->
-                onTransportError(generation, listener, error)
+            val tunFd = try {
+                Builder()
+                    .addAddress(linkLocal, LINK_PREFIX)
+                    .addRoute(LINK_LOCAL_ROUTE, LINK_PREFIX)
+                    .setSession(SESSION_NAME)
+                    .setMtu(TUN_MTU)
+                    .setBlocking(true)
+                    .addAllowedApplication(packageName)
+                    .establish()
+            } catch (error: Exception) {
+                Log.w(TAG, "VPN establish failed; falling back to userspace IPv6 stack", error)
+                runCatching { listener.onDebugLog("wired VPN establish failed: ${attachFailure(error)}") }
+                null
             }
-            ipv6Bridge.start()
-            bridge = ipv6Bridge
 
-            startAirPlayServer(
-                generation,
-                AirPlayAttachment(scopedToTunnel(address, listener), config, identity, pairings, mfi, listener, media),
-            )
+            if (tunFd != null) {
+                tun = tunFd
+                val ipv6Bridge = Ipv6NcmBridge(ncm, tunFd, hostMac) { error ->
+                    onTransportError(generation, listener, error)
+                }
+                ipv6Bridge.start()
+                bridge = ipv6Bridge
+
+                startAirPlayServer(
+                    generation,
+                    AirPlayAttachment(scopedToTunnel(address, listener), config, identity, pairings, mfi, listener, media),
+                )
+            } else {
+                runCatching { listener.onDebugLog("wired transport=USERSPACE_IPV6 port=${config.port}") }
+                val usBridge = UserspaceIpv6NcmBridge(ncm, hostMac, config.port) { error ->
+                    onTransportError(generation, listener, error)
+                }
+                usBridge.start()
+                bridge = usBridge
+
+                startAirPlayServer(
+                    generation,
+                    AirPlayAttachment(InetAddress.getByName("127.0.0.1"), config, identity, pairings, mfi, listener, media),
+                )
+            }
             AttachResult.Started
         } catch (error: Exception) {
             releaseLocked()
@@ -231,6 +248,7 @@ class CarPlayVpnService : VpnService() {
         }
         val server = servers.first()
         attachment = replacement.copy(config = replacement.config.copy(port = server.localPort))
+        (bridge as? UserspaceIpv6NcmBridge)?.setAirPlayPort(server.localPort)
         serverSocket = server
         additionalServers = servers.drop(1)
         servers.forEach { bound ->
